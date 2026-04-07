@@ -146,8 +146,36 @@ async def detect_face(request: ImageRequest):
 @app.post("/solve")
 async def solve_cube(request: SolveRequest):
     try:
-        # Kociemba standard notation: U, R, F, D, L, B
-        solution = kociemba.solve(request.cube_string)
+        # The frontend sends a 54-char string of colors (e.g., 'W', 'R', 'G', 'Y', 'O', 'B')
+        # Kociemba standard notation requires face identifiers: U, R, F, D, L, B
+        # We map colors to faces based on the center sticker of each face.
+        
+        cube_str = request.cube_string
+        if len(cube_str) != 54:
+            raise ValueError(f"Cube string must be 54 characters, got {len(cube_str)}")
+            
+        # Standard faces order: U, R, F, D, L, B (9 stickers each)
+        # Center stickers are at indices: 4, 13, 22, 31, 40, 49
+        try:
+            color_map = {
+                cube_str[4]: 'U',
+                cube_str[13]: 'R',
+                cube_str[22]: 'F',
+                cube_str[31]: 'D',
+                cube_str[40]: 'L',
+                cube_str[49]: 'B'
+            }
+        except IndexError:
+             raise ValueError("Incomplete cube string provided.")
+
+        # Map each color to its corresponding face letter
+        mapped_str = "".join([color_map.get(c, 'X') for c in cube_str])
+        
+        if 'X' in mapped_str:
+            raise ValueError("Inconsistent cube colors: some colors do not match any face center.")
+            
+        # Solve using Kociemba
+        solution = kociemba.solve(mapped_str)
         
         # Expand for ESP32 (as per doc: R2 -> R, R; R' -> R_CCW)
         expanded_moves = []
