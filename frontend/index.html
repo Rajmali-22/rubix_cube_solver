@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rubix Pro Solver | Professional Hardware Interface</title>
+    
+    <!-- LOCAL DEPENDENCIES - NO EXTERNAL CALLS -->
+    <script src="lib/react.min.js"></script>
+    <script src="lib/react-dom.min.js"></script>
+    <script src="lib/babel.min.js"></script>
+    <script src="lib/three.min.js"></script>
+    <script src="lib/tailwind.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        body { font-family: 'Inter', sans-serif; background: #070b14; color: #f1f5f9; overflow-x: hidden; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .cube-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: 210px; height: 210px; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 12px; }
+        .sticker { width: 60px; height: 60px; border-radius: 8px; cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); border: 2px solid rgba(0,0,0,0.2); box-shadow: inset 0 0 10px rgba(0,0,0,0.1); }
+        .sticker:hover { transform: scale(1.08); z-index: 10; box-shadow: 0 0 15px rgba(255,255,255,0.1); }
+        
+        .color-W { background: #ffffff; }
+        .color-Y { background: #ffd700; }
+        .color-R { background: #dc2626; }
+        .color-O { background: #f97316; }
+        .color-B { background: #2563eb; }
+        .color-G { background: #16a34a; }
+        .color-null { background: #1e293b; border: 2px dashed rgba(255,255,255,0.1); }
+
+        .glass { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.08); }
+        .glow-blue { box-shadow: 0 0 30px rgba(59, 130, 246, 0.15); }
+        .glow-emerald { box-shadow: 0 0 30px rgba(16, 185, 129, 0.15); }
+        
+        .move-chip { background: #1e293b; color: #94a3b8; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; border: 1px solid rgba(255,255,255,0.05); }
+        .move-chip.active { background: #2563eb; color: white; border-color: #3b82f6; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5); }
+
+        @keyframes scan { from { transform: translateY(0); } to { transform: translateY(400px); } }
+        .scanning-active { animation: pulse-border 2s infinite; border-width: 2px; }
+        @keyframes pulse-border { 0% { border-color: rgba(59, 130, 246, 0.2); } 50% { border-color: rgba(59, 130, 246, 0.6); } 100% { border-color: rgba(59, 130, 246, 0.2); } }
+        
+        .btn-action { transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; }
+        .btn-action:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.1); }
+        .btn-action:active:not(:disabled) { transform: translateY(1px); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const FACES = [
+            { id: 'U', name: 'Up', color: 'W', desc: 'Hold white center on top' },
+            { id: 'R', name: 'Right', color: 'R', desc: 'Hold red center facing camera' },
+            { id: 'F', name: 'Front', color: 'G', desc: 'Hold green center facing camera' },
+            { id: 'D', name: 'Down', color: 'Y', desc: 'Hold yellow center on bottom' },
+            { id: 'L', name: 'Left', color: 'O', desc: 'Hold orange center facing camera' },
+            { id: 'B', name: 'Back', color: 'B', desc: 'Hold blue center facing camera' }
+        ];
+
+        const COLOR_MAP = {
+            'W': 0xffffff, 'Y': 0xffd700, 'R': 0xdc2626,
+            'O': 0xf97316, 'B': 0x2563eb, 'G': 0x16a34a, 'null': 0x1e293b
+        };
+
+        const App = () => {
+            const [currentFaceIdx, setCurrentFaceIdx] = useState(0);
+            const [cubeState, setCubeState] = useState({
+                'U': Array(9).fill(null), 'R': Array(9).fill(null), 'F': Array(9).fill(null),
+                'D': Array(9).fill(null), 'L': Array(9).fill(null), 'B': Array(9).fill(null)
+            });
+            const [isCapturing, setIsCapturing] = useState(false);
+            const [solution, setSolution] = useState("");
+            const [moves, setMoves] = useState([]);
+            const [status, setStatus] = useState('SYSTEM_READY');
+            const [wsConnected, setWsConnected] = useState(false);
+            const [activeMoveIdx, setActiveMoveIdx] = useState(-1);
+            
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const threeContainerRef = useRef(null);
+            const stickersRef = useRef([]);
+
+            useEffect(() => {
+                startCamera();
+                const cleanup = init3D();
+                return cleanup;
+            }, []);
+
+            useEffect(() => {
+                update3D();
+            }, [cubeState]);
+
+            const startCamera = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: { facingMode: 'environment', width: 1280, height: 720 } 
+                    });
+                    if (videoRef.current) videoRef.current.srcObject = stream;
+                } catch (err) {
+                    setStatus('ERROR:CAMERA_NOT_FOUND');
+                }
+            };
+
+            const init3D = () => {
+                const width = 400, height = 400;
+                const scene = new THREE.Scene();
+                const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(width, height);
+                threeContainerRef.current.appendChild(renderer.domElement);
+
+                scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+                const pointLight = new THREE.PointLight(0xffffff, 0.6);
+                pointLight.position.set(5, 5, 5);
+                scene.add(pointLight);
+
+                const stickerGeom = new THREE.PlaneGeometry(0.85, 0.85);
+                const meshes = [];
+
+                const createStickerGroup = (faceId, rotation, positionOffset) => {
+                    for (let row = 0; row < 3; row++) {
+                        for (let col = 0; col < 3; col++) {
+                            const mat = new THREE.MeshPhongMaterial({ color: COLOR_MAP['null'], side: THREE.DoubleSide });
+                            const mesh = new THREE.Mesh(stickerGeom, mat);
+                            mesh.position.set((col - 1) * 0.95, (1 - row) * 0.95, 0);
+                            const group = new THREE.Group();
+                            group.add(mesh);
+                            group.rotation.set(...rotation);
+                            group.position.set(...positionOffset);
+                            scene.add(group);
+                            meshes.push({ faceId, index: row * 3 + col, mesh });
+                        }
+                    }
+                };
+
+                createStickerGroup('U', [-Math.PI/2, 0, 0], [0, 1.5, 0]);
+                createStickerGroup('D', [Math.PI/2, 0, 0], [0, -1.5, 0]);
+                createStickerGroup('F', [0, 0, 0], [0, 0, 1.5]);
+                createStickerGroup('B', [0, Math.PI, 0], [0, 0, -1.5]);
+                createStickerGroup('L', [0, -Math.PI/2, 0], [-1.5, 0, 0]);
+                createStickerGroup('R', [0, Math.PI/2, 0], [1.5, 0, 0]);
+
+                stickersRef.current = meshes;
+                camera.position.set(5, 5, 8);
+                camera.lookAt(0, 0, 0);
+
+                const animate = () => {
+                    const reqId = requestAnimationFrame(animate);
+                    scene.rotation.y += 0.005;
+                    renderer.render(scene, camera);
+                    return reqId;
+                };
+                const id = animate();
+                return () => cancelAnimationFrame(id);
+            };
+
+            const update3D = () => {
+                stickersRef.current.forEach(({ faceId, index, mesh }) => {
+                    const colorKey = cubeState[faceId][index] || 'null';
+                    mesh.material.color.setHex(COLOR_MAP[colorKey]);
+                });
+            };
+
+            const captureFace = async () => {
+                setIsCapturing(true);
+                const canvas = canvasRef.current;
+                const video = videoRef.current;
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                const base64Image = canvas.toDataURL('image/jpeg');
+                
+                try {
+                    const response = await fetch('http://localhost:5000/detect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image_base64: base64Image })
+                    });
+                    const data = await response.json();
+                    const faceId = FACES[currentFaceIdx].id;
+                    setCubeState(prev => ({ ...prev, [faceId]: data.colors }));
+                    setStatus(`FACE_${faceId}_ACQUIRED`);
+                } catch (err) {
+                    setStatus('ERROR:BACKEND_OFFLINE');
+                } finally {
+                    setIsCapturing(false);
+                }
+            };
+
+            const computeSolution = async () => {
+                setStatus('COMPUTING_ALGORITHM...');
+                let fullString = '';
+                try {
+                    FACES.forEach(f => {
+                        const colors = cubeState[f.id];
+                        if (colors.includes(null)) throw new Error(`INCOMPLETE_SCAN:${f.id}`);
+                        fullString += colors.join('');
+                    });
+
+                    const response = await fetch('http://localhost:5000/solve', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cube_string: fullString })
+                    });
+                    if (!response.ok) throw new Error('UNSOLVABLE_STATE');
+                    const data = await response.json();
+                    setSolution(data.solution);
+                    setMoves(data.moves);
+                    setStatus('COMPUTE_SUCCESSFUL');
+                } catch (err) {
+                    setStatus(`ERROR:${err.message}`);
+                }
+            };
+
+            const executeOnHardware = () => {
+                setStatus('WS_INITIALIZING...');
+                const ws = new WebSocket('ws://192.168.1.100:81'); // Change to your ESP32 IP
+                
+                ws.onopen = () => {
+                    setWsConnected(true);
+                    setStatus('HARDWARE_EXECUTING...');
+                    ws.send(JSON.stringify({ type: 'SOLVE', moves: moves }));
+                };
+                
+                ws.onmessage = (msg) => {
+                    const data = JSON.parse(msg.data);
+                    if (data.type === 'PROGRESS') {
+                        setActiveMoveIdx(data.current - 1);
+                        setStatus(`EXECUTING_${data.current}_/${data.total}`);
+                    } else if (data.type === 'COMPLETE') {
+                        setStatus('MISSION_COMPLETE');
+                        setActiveMoveIdx(-1);
+                        ws.close();
+                    }
+                };
+                
+                ws.onclose = () => {
+                    setWsConnected(false);
+                    if (status !== 'MISSION_COMPLETE') setStatus('WS_DISCONNECTED');
+                };
+                ws.onerror = () => setStatus('ERROR:WS_HANDSHAKE_FAILED');
+            };
+
+            return (
+                <div className="min-h-screen p-4 md:p-12 flex flex-col items-center">
+                    <header className="w-full max-w-7xl flex justify-between items-center mb-12">
+                        <div className="flex items-center space-x-4">
+                            <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(59,130,246,0.6)]"></div>
+                            <h1 className="text-3xl font-black mono tracking-tighter">RUBIX_PRO_SOLVER</h1>
+                        </div>
+                        <div className="glass px-6 py-2 rounded-xl border border-blue-500/20">
+                            <span className="text-slate-500 text-[10px] font-bold uppercase mr-4">System Node:</span>
+                            <span className="text-blue-400 mono text-sm">{status}</span>
+                        </div>
+                    </header>
+
+                    <main className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-12 gap-8">
+                        {/* Perception Section */}
+                        <div className="lg:col-span-8 space-y-6">
+                            <div className={`relative rounded-3xl overflow-hidden glass aspect-video shadow-2xl transition-all duration-500 ${isCapturing ? 'scanning-active' : ''}`}>
+                                <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover grayscale opacity-40 mix-blend-screen" />
+                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <div className="w-64 h-64 border-2 border-blue-500/20 rounded-3xl grid grid-cols-3 grid-rows-3 overflow-hidden">
+                                        {[...Array(9)].map((_, i) => <div key={i} className="border border-blue-500/10" />)}
+                                    </div>
+                                    <div className="absolute top-0 left-0 w-full h-1 bg-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.5)] animate-[scan_3s_linear_infinite]"></div>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="glass p-8 rounded-3xl border-l-4 border-blue-500/50 glow-blue">
+                                    <h3 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2">Active Target: {FACES[currentFaceIdx].name}</h3>
+                                    <p className="text-slate-200 text-lg font-bold mb-8">{FACES[currentFaceIdx].desc}</p>
+                                    <div className="flex space-x-3">
+                                        <button onClick={captureFace} disabled={isCapturing} className="flex-1 btn-action bg-blue-600 text-white py-4 text-[10px] rounded-xl disabled:bg-slate-800">
+                                            Capture Side
+                                        </button>
+                                        <button onClick={() => setCurrentFaceIdx(v => (v + 1) % 6)} className="px-6 btn-action bg-slate-800 text-white text-[10px] rounded-xl">
+                                            Skip
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="glass p-8 rounded-3xl border-slate-700">
+                                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-6">Instruction Stream</h3>
+                                    <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto custom-scrollbar">
+                                        {moves.length > 0 ? moves.map((m, i) => (
+                                            <div key={i} className={`move-chip ${i === activeMoveIdx ? 'active' : ''}`}>{m}</div>
+                                        )) : <p className="text-slate-600 text-[10px] font-black mono italic uppercase opacity-40">Awaiting Computation...</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* State Section */}
+                        <div className="lg:col-span-4 space-y-8">
+                            <div className="glass rounded-3xl p-6 flex flex-col items-center">
+                                <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 self-start">Spatial Digital Twin</h3>
+                                <div ref={threeContainerRef} className="w-full aspect-square" />
+                            </div>
+
+                            <div className="glass p-8 rounded-3xl flex flex-col items-center">
+                                <div className="cube-grid mb-8">
+                                    {(cubeState[FACES[currentFaceIdx].id]).map((c, i) => (
+                                        <div key={i} className={`sticker color-${c || 'null'}`} onClick={() => {
+                                            const newState = [...cubeState[FACES[currentFaceIdx].id]];
+                                            const colors = ['W', 'Y', 'R', 'O', 'B', 'G'];
+                                            const cur = colors.indexOf(c);
+                                            newState[i] = cur === -1 ? 'W' : colors[(cur + 1) % 6];
+                                            setCubeState({...cubeState, [FACES[currentFaceIdx].id]: newState});
+                                        }} />
+                                    ))}
+                                </div>
+                                
+                                <div className="w-full space-y-3">
+                                    <button onClick={computeSolution} className="w-full btn-action bg-white text-slate-900 py-4 text-[10px] rounded-xl">
+                                        1. Compute Solution
+                                    </button>
+                                    <button 
+                                        onClick={executeOnHardware} 
+                                        disabled={!solution || moves.length === 0} 
+                                        className="w-full btn-action bg-emerald-600 text-white py-4 text-[10px] rounded-xl disabled:bg-slate-800 disabled:text-slate-600 glow-emerald"
+                                    >
+                                        2. Send to Hardware
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    <canvas ref={canvasRef} className="hidden" />
+                    <footer className="mt-24 text-slate-700 text-[10px] font-bold tracking-[0.4em] uppercase">
+                        Secure Neural Protocol v3.0 // No External Assets
+                    </footer>
+                    
+                    <style>{`
+                        @keyframes scan { from { transform: translateY(0); } to { transform: translateY(400px); } }
+                        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+                        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+                    `}</style>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
