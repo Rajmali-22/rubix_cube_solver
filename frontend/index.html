@@ -22,6 +22,33 @@
         .cube-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: 210px; height: 210px; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 12px; }
         .sticker { width: 60px; height: 60px; border-radius: 8px; cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); border: 2px solid rgba(0,0,0,0.2); box-shadow: inset 0 0 10px rgba(0,0,0,0.1); }
         .sticker:hover { transform: scale(1.08); z-index: 10; box-shadow: 0 0 15px rgba(255,255,255,0.1); }
+
+        /* Responsive 3D container */
+        .three-container { width: 100%; aspect-ratio: 1; overflow: hidden; position: relative; }
+        .three-container canvas { display: block; width: 100% !important; height: 100% !important; }
+
+        /* Face progress stepper */
+        .face-stepper { display: flex; gap: 8px; align-items: center; justify-content: center; padding: 16px 0; }
+        .face-step { display: flex; flex-direction: column; align-items: center; gap: 6px; cursor: pointer; transition: all 0.2s ease; }
+        .face-step:hover { transform: translateY(-2px); }
+        .face-dot { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; font-family: 'JetBrains Mono', monospace; transition: all 0.3s ease; border: 2px solid transparent; }
+        .face-dot.empty { background: #1e293b; border: 2px dashed rgba(255,255,255,0.15); color: #475569; }
+        .face-dot.filled { border-color: rgba(255,255,255,0.2); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5); box-shadow: 0 0 12px rgba(255,255,255,0.1); }
+        .face-dot.active { animation: pulse-dot 2s infinite; }
+        .face-dot.filled.active { box-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
+        .face-step-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #475569; transition: color 0.2s; }
+        .face-step.active .face-step-label { color: #3b82f6; }
+        .face-step.filled .face-step-label { color: #94a3b8; }
+        .face-step-connector { width: 20px; height: 2px; background: #1e293b; border-radius: 1px; margin-bottom: 20px; }
+        .face-step-connector.filled { background: linear-gradient(90deg, #3b82f6, #10b981); }
+        @keyframes pulse-dot { 0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); } 50% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); } }
+
+        /* Camera error overlay */
+        .camera-error-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(7, 11, 20, 0.92); backdrop-filter: blur(8px); z-index: 20; gap: 16px; }
+        .camera-error-icon { width: 56px; height: 56px; border-radius: 50%; background: rgba(239, 68, 68, 0.15); display: flex; align-items: center; justify-content: center; border: 2px solid rgba(239, 68, 68, 0.3); }
+        .camera-error-icon svg { width: 28px; height: 28px; color: #ef4444; }
+        .camera-retry-btn { padding: 10px 28px; border-radius: 12px; background: #2563eb; color: white; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.15em; border: none; cursor: pointer; transition: all 0.2s; }
+        .camera-retry-btn:hover { background: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4); }
         
         .color-W { background: #ffffff; }
         .color-Y { background: #ffd700; }
@@ -77,6 +104,7 @@
             const [solution, setSolution] = useState("");
             const [moves, setMoves] = useState([]);
             const [status, setStatus] = useState('SYSTEM_READY');
+            const [cameraError, setCameraError] = useState(false);
             const [wsConnected, setWsConnected] = useState(false);
             const [activeMoveIdx, setActiveMoveIdx] = useState(-1);
             
@@ -84,6 +112,8 @@
             const canvasRef = useRef(null);
             const threeContainerRef = useRef(null);
             const stickersRef = useRef([]);
+            const rafIdRef = useRef(null);
+            const rendererRef = useRef(null);
 
             useEffect(() => {
                 startCamera();
@@ -101,18 +131,37 @@
                         video: { facingMode: 'environment', width: 1280, height: 720 } 
                     });
                     if (videoRef.current) videoRef.current.srcObject = stream;
+                    setCameraError(false);
                 } catch (err) {
+                    setCameraError(true);
                     setStatus('ERROR:CAMERA_NOT_FOUND');
                 }
             };
 
             const init3D = () => {
-                const width = 400, height = 400;
+                const container = threeContainerRef.current;
+                const width = container.clientWidth || 400;
+                const height = container.clientHeight || width;
                 const scene = new THREE.Scene();
                 const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
                 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
                 renderer.setSize(width, height);
-                threeContainerRef.current.appendChild(renderer.domElement);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                rendererRef.current = renderer;
+                container.appendChild(renderer.domElement);
+
+                // ResizeObserver for responsive 3D canvas
+                const resizeObserver = new ResizeObserver((entries) => {
+                    for (const entry of entries) {
+                        const { width: w, height: h } = entry.contentRect;
+                        if (w > 0 && h > 0) {
+                            renderer.setSize(w, h);
+                            camera.aspect = w / h;
+                            camera.updateProjectionMatrix();
+                        }
+                    }
+                });
+                resizeObserver.observe(container);
 
                 scene.add(new THREE.AmbientLight(0xffffff, 0.8));
                 const pointLight = new THREE.PointLight(0xffffff, 0.6);
@@ -149,14 +198,19 @@
                 camera.position.set(5, 5, 8);
                 camera.lookAt(0, 0, 0);
 
+                // Fixed RAF memory leak: store latest ID in ref
                 const animate = () => {
-                    const reqId = requestAnimationFrame(animate);
+                    rafIdRef.current = requestAnimationFrame(animate);
                     scene.rotation.y += 0.005;
                     renderer.render(scene, camera);
-                    return reqId;
                 };
-                const id = animate();
-                return () => cancelAnimationFrame(id);
+                animate();
+
+                return () => {
+                    cancelAnimationFrame(rafIdRef.current);
+                    resizeObserver.disconnect();
+                    renderer.dispose();
+                };
             };
 
             const update3D = () => {
@@ -246,6 +300,17 @@
                 ws.onerror = () => setStatus('ERROR:WS_HANDSHAKE_FAILED');
             };
 
+            // Helper: check if a face has been scanned
+            const isFaceScanned = (faceId) => {
+                return cubeState[faceId].some(c => c !== null);
+            };
+
+            // Face color map for stepper dots
+            const FACE_COLOR_MAP = {
+                'W': '#ffffff', 'Y': '#ffd700', 'R': '#dc2626',
+                'O': '#f97316', 'B': '#2563eb', 'G': '#16a34a'
+            };
+
             return (
                 <div className="min-h-screen p-4 md:p-12 flex flex-col items-center">
                     <header className="w-full max-w-7xl flex justify-between items-center mb-12">
@@ -269,6 +334,50 @@
                                         {[...Array(9)].map((_, i) => <div key={i} className="border border-blue-500/10" />)}
                                     </div>
                                     <div className="absolute top-0 left-0 w-full h-1 bg-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.5)] animate-[scan_3s_linear_infinite]"></div>
+                                </div>
+
+                                {/* Bug #2: Camera error overlay */}
+                                {cameraError && (
+                                    <div className="camera-error-overlay">
+                                        <div className="camera-error-icon">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18" />
+                                            </svg>
+                                        </div>
+                                        <p style={{color: '#f87171', fontWeight: 700, fontSize: '14px', letterSpacing: '0.05em'}}>Camera Access Required</p>
+                                        <p style={{color: '#64748b', fontSize: '12px', maxWidth: '280px', textAlign: 'center', lineHeight: 1.5}}>Please allow camera permissions in your browser settings to scan cube faces.</p>
+                                        <button className="camera-retry-btn" onClick={() => { setCameraError(false); startCamera(); }}>Retry Camera</button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Bug #3: Face Scan Progress Indicator */}
+                            <div className="glass rounded-2xl p-4">
+                                <div className="face-stepper">
+                                    {FACES.map((face, idx) => {
+                                        const scanned = isFaceScanned(face.id);
+                                        const isActive = idx === currentFaceIdx;
+                                        return (
+                                            <React.Fragment key={face.id}>
+                                                <div 
+                                                    className={`face-step ${isActive ? 'active' : ''} ${scanned ? 'filled' : ''}`}
+                                                    onClick={() => setCurrentFaceIdx(idx)}
+                                                >
+                                                    <div 
+                                                        className={`face-dot ${scanned ? 'filled' : 'empty'} ${isActive ? 'active' : ''}`}
+                                                        style={scanned ? { background: FACE_COLOR_MAP[face.color] } : {}}
+                                                    >
+                                                        {scanned ? '✓' : face.id}
+                                                    </div>
+                                                    <span className="face-step-label">{face.name}</span>
+                                                </div>
+                                                {idx < FACES.length - 1 && (
+                                                    <div className={`face-step-connector ${scanned && isFaceScanned(FACES[Math.min(idx + 1, 5)].id) ? 'filled' : ''}`} />
+                                                )}
+                                            </React.Fragment>
+                                        );
+                                    })}
                                 </div>
                             </div>
 
@@ -301,7 +410,7 @@
                         <div className="lg:col-span-4 space-y-8">
                             <div className="glass rounded-3xl p-6 flex flex-col items-center">
                                 <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 self-start">Spatial Digital Twin</h3>
-                                <div ref={threeContainerRef} className="w-full aspect-square" />
+                                <div ref={threeContainerRef} className="three-container" />
                             </div>
 
                             <div className="glass p-8 rounded-3xl flex flex-col items-center">
@@ -339,7 +448,6 @@
                     </footer>
                     
                     <style>{`
-                        @keyframes scan { from { transform: translateY(0); } to { transform: translateY(400px); } }
                         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
                         .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
                     `}</style>

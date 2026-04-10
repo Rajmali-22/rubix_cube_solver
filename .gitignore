@@ -1,2 +1,6 @@
 claude/
 read_arch.py
+.env
+.env.local
+.env.example
+implementation_plan.md
